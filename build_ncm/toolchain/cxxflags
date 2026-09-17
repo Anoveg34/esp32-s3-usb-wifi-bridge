@@ -1,0 +1,7 @@
+-mlongcalls
+-fno-builtin-memcpy
+-fno-builtin-memset
+-fno-builtin-bzero
+-mdisable-hardware-atomics
+"-specs=D:/ESP32-S3/projects/esp32-s3-wired-to-wifi/build_ncm/specs/picolibc.specs"
+-fno-rtti

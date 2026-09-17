@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ESP32-S3 共享热点</title>
+<style>
+:root { --bg:#0f1419; --card:#1a2332; --line:#2c3a4f; --txt:#e8eef7; --muted:#9aa8bc; --acc:#3d8bfd; --ok:#3dd68c; --warn:#ffb020; --bad:#ff6b6b; }
+*{box-sizing:border-box} body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--txt)}
+.wrap{max-width:760px;margin:0 auto;padding:20px 20px 96px}
+h1{font-size:22px;margin:0 0 6px} .sub{color:var(--muted);margin:0 0 20px;font-size:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px;margin:0 0 16px}
+h2{font-size:16px;margin:0 0 12px}
+label{display:block;font-size:13px;color:var(--muted);margin:10px 0 4px}
+input,select{width:100%;padding:10px 12px;border-radius:8px;border:1px solid var(--line);background:#121a24;color:var(--txt)}
+.row{display:flex;gap:12px;flex-wrap:wrap}.row>*{flex:1;min-width:140px}
+.check{display:flex;align-items:center;gap:8px;margin-top:12px;color:var(--txt);font-size:14px}
+.check input{width:auto}
+.btn{border:0;border-radius:8px;padding:10px 16px;font-weight:600;cursor:pointer}
+.btn-p{background:var(--acc);color:#fff}.btn-g{background:#243044;color:var(--txt)}.btn-d{background:#3a2030;color:#ffd0d0}
+table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line)}
+.mac{font-family:ui-monospace,monospace} .muted{color:var(--muted)} .ok{color:var(--ok)}
+.note{font-size:12px;color:var(--muted);line-height:1.55;margin-top:8px}
+.toast{position:fixed;right:16px;bottom:84px;background:#132033;border:1px solid var(--line);padding:10px 14px;border-radius:8px;display:none;max-width:70%;z-index:2}
+.foot{position:fixed;left:0;right:0;bottom:0;background:#121a24;border-top:1px solid var(--line);padding:12px 20px;z-index:1}
+.foot-inner{max-width:760px;margin:0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.foot .hint{flex:1;font-size:12px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>有线网 Wi-Fi 共享</h1>
+  <p class="sub">管理地址 <span class="ok" id="adminUrl">http://192.168.4.1</span> · 主机名 <span class="ok" id="mdnsUrl">http://esp32-share.local</span> · 当前 USB：<b id="usbNow">-</b></p>
+
+  <div class="card">
+    <h2>USB 网卡协议</h2>
+    <div class="row">
+      <label>协议
+        <select id="usbMode">
+          <option value="rndis">RNDIS（Windows 10 免驱）</option>
+          <option value="ncm">NCM（手动绑定 UsbNcm Host Device）</option>
+        </select>
+      </label>
+    </div>
+    <p class="note" id="usbNote">改协议后点下方「保存设置」才会发给板子并重启。切换后请在设备管理器里卸掉旧 USB 网卡再插拔。</p>
+  </div>
+
+  <div class="card">
+    <h2>Wi-Fi 热点</h2>
+    <label>名称 (SSID)<input id="ssid" maxlength="32"></label>
+    <label>密码（留空表示不修改）<input id="password" type="password" maxlength="64" placeholder="至少 8 位，或勾选开放网络"></label>
+    <div class="row">
+      <label>信道<input id="channel" type="number" min="1" max="13"></label>
+    </div>
+    <label class="check"><input id="hidden" type="checkbox"> 隐藏热点（不广播名称）</label>
+    <label class="check"><input id="openNet" type="checkbox"> 开放网络（无密码）</label>
+  </div>
+
+  <div class="card">
+    <h2>已连接设备</h2>
+    <p class="note">踢下线 / 屏蔽会马上发给板子，不必点保存。</p>
+    <table>
+      <thead><tr><th>MAC</th><th>IP</th><th>信号</th><th></th></tr></thead>
+      <tbody id="staBody"><tr><td class="muted" colspan="4">暂无设备</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>已屏蔽</h2>
+    <table>
+      <thead><tr><th>MAC</th><th></th></tr></thead>
+      <tbody id="blkBody"><tr><td class="muted" colspan="2">无</td></tr></tbody>
+    </table>
+  </div>
+</div>
+<div class="foot">
+  <div class="foot-inner">
+    <div class="hint">改协议或热点后点「保存设置」才发给板子。改 USB 协议会重启。</div>
+    <button class="btn btn-g" onclick="cancelCfg()">取消</button>
+    <button class="btn btn-p" onclick="saveCfg()">保存设置</button>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+const toast = (m)=>{const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3200)}
+const j = (u,opt)=>fetch(u,opt).then(r=>r.json())
+let snap = null
+function readForm(){
+  return {
+    usbMode:document.getElementById('usbMode').value,
+    ssid:document.getElementById('ssid').value,
+    password:document.getElementById('password').value,
+    channel:document.getElementById('channel').value,
+    hidden:document.getElementById('hidden').checked,
+    openNet:document.getElementById('openNet').checked
+  }
+}
+function writeForm(s){
+  if(!s) return
+  document.getElementById('usbMode').value=s.usbMode
+  document.getElementById('ssid').value=s.ssid
+  document.getElementById('password').value=s.password||''
+  document.getElementById('channel').value=s.channel
+  document.getElementById('hidden').checked=!!s.hidden
+  document.getElementById('openNet').checked=!!s.openNet
+}
+function loadCfg(){
+  return j('/api/config').then(c=>{
+    writeForm({
+      usbMode:c.usb_ncm?'ncm':'rndis',
+      ssid:c.ssid||'',
+      password:'',
+      channel:c.channel||6,
+      hidden:!!c.hidden,
+      openNet:!!c.open
+    })
+    document.getElementById('usbNow').textContent=c.firmware_usb
+    const host=c.hostname||'esp32-share.local'
+    document.getElementById('mdnsUrl').textContent='http://'+host
+    const ip=c.admin_ip||'192.168.4.1'
+    document.getElementById('adminUrl').textContent='http://'+ip
+    const miss=[]
+    if(!c.rndis_ready) miss.push('RNDIS')
+    if(!c.ncm_ready) miss.push('NCM')
+    document.getElementById('usbNote').textContent=miss.length
+      ? ('当前 Flash 缺少：'+miss.join('、')+'。请运行 python tools/dual_fw.py flash 后再切换协议。')
+      : '两套固件都在 Flash 里。改协议后点下方保存，板子会重启到对应固件。'
+    snap = readForm()
+  })
+}
+function staRow(s){
+  return `<tr>
+    <td class="mac">${s.mac}</td><td>${s.ip||'-'}</td><td>${s.rssi} dBm</td>
+    <td><button class="btn btn-g" onclick="kick('${s.mac}')">踢下线</button>
+        <button class="btn btn-d" onclick="block('${s.mac}',true)">屏蔽</button></td></tr>`
+}
+function loadSta(){
+  return j('/api/stations').then(d=>{
+    const tb=document.getElementById('staBody')
+    tb.innerHTML=d.stations.length?d.stations.map(staRow).join(''):'<tr><td class="muted" colspan="4">暂无设备</td></tr>'
+    const bb=document.getElementById('blkBody')
+    bb.innerHTML=d.blocked.length?d.blocked.map(m=>`<tr><td class="mac">${m}</td><td><button class="btn btn-g" onclick="block('${m}',false)">取消屏蔽</button></td></tr>`).join(''):'<tr><td class="muted" colspan="2">无</td></tr>'
+  })
+}
+function loadAll(){loadCfg();loadSta()}
+function cancelCfg(){
+  writeForm(snap)
+  toast('已还原未保存的修改')
+}
+function saveCfg(){
+  const f=readForm()
+  const body={
+    ssid:f.ssid,
+    password:f.password,
+    channel:parseInt(f.channel,10),
+    hidden:f.hidden,
+    open:f.openNet,
+    usb_ncm:f.usbMode==='ncm'
+  }
+  j('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
+    .then(r=>{toast(r.message||'已保存'); if(r.reboot){toast('设备正在重启…')} loadAll()})
+    .catch(()=>toast('保存失败'))
+}
+function kick(mac){j('/api/kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mac})}).then(()=>{toast('已踢下线');loadSta()})}
+function block(mac,on){j('/api/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mac,block:on})}).then(()=>{toast(on?'已屏蔽':'已取消');loadSta()})}
+loadAll(); setInterval(loadSta, 4000)
+</script>
+</body>
+</html>

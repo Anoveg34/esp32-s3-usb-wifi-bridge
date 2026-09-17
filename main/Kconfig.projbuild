@@ -1,0 +1,52 @@
+menu "Example Configuration"
+
+    choice EXAMPLE_USB_NET_MODE
+        prompt "USB network protocol"
+        default EXAMPLE_USB_NET_MODE_RNDIS
+        help
+            Each firmware image still contains only one TinyUSB stack.
+            Flash both images with: python tools/dual_fw.py flash
+            ota_0 = RNDIS, ota_1 = NCM. The web UI reboots into the selected slot.
+            SoftAP is always NAT at 192.168.4.1.
+
+        config EXAMPLE_USB_NET_MODE_RNDIS
+            bool "RNDIS (Windows 10 auto driver)"
+            help
+                Windows 10 loads "Remote NDIS based Internet Sharing Device"
+                without a third-party driver.
+
+        config EXAMPLE_USB_NET_MODE_NCM
+            bool "NCM (bind Microsoft UsbNcm Host Device)"
+            help
+                Device appears as CDC NCM / USB net. In Device Manager:
+                Update driver -> Network adapters -> Microsoft -> UsbNcm Host Device.
+
+    endchoice
+
+    config EXAMPLE_WIFI_SSID
+        string "Wi-Fi SSID"
+        default "ESP32-S3-Share"
+        help
+            SSID of the SoftAP that shares the PC wired network.
+
+    config EXAMPLE_WIFI_PASSWORD
+        string "Wi-Fi Password"
+        default "12345678"
+        help
+            WPA2 password. Leave empty for an open AP.
+
+    config EXAMPLE_WIFI_CHANNEL
+        int "Wi-Fi channel"
+        range 1 13
+        default 6
+        help
+            2.4 GHz channel for the SoftAP.
+
+    config EXAMPLE_MAX_STA_CONN
+        int "Maximum STA connections"
+        default 4
+        range 1 15
+        help
+            Maximum number of stations allowed to join the SoftAP.
+
+endmenu
