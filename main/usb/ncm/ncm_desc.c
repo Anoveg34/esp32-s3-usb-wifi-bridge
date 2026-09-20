@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "usb_desc.h"
 #include "tusb.h"
 #include "class/net/net_device.h"
@@ -24,7 +25,7 @@ enum {
 #define USB_VID          0x303A
 #define NCM_CONFIG_TOTAL_LEN    (TUD_CONFIG_DESC_LEN + TUD_CDC_NCM_DESC_LEN)
 
-static const tusb_desc_device_t s_device = {
+static tusb_desc_device_t s_device = {
     .bLength            = sizeof(tusb_desc_device_t),
     .bDescriptorType    = TUSB_DESC_DEVICE,
     .bcdUSB             = 0x0200,
@@ -42,27 +43,41 @@ static const tusb_desc_device_t s_device = {
 };
 
 static const uint8_t s_fs_configuration[] = {
-    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, NCM_CONFIG_TOTAL_LEN,
-                          TUSB_DESC_CONFIG_ATT_REMOTE_WAKEUP, 100),
+    TUD_CONFIG_DESCRIPTOR(1, ITF_NUM_TOTAL, 0, NCM_CONFIG_TOTAL_LEN, 0, 100),
     TUD_CDC_NCM_DESCRIPTOR(ITF_NUM_NET, STRID_INTERFACE, STRID_MAC, EPNUM_NET_NOTIF, 64,
                            EPNUM_NET_OUT, EPNUM_NET_IN, 64, CFG_TUD_NET_MTU),
 };
 
 static char s_mac_str[13];
+static char s_product[32] = "ESP32-S3 USB Ethernet";
+static char s_serial[12] = "SHARE001";
 
 static const char *s_string[USB_NET_STRING_COUNT] = {
     [STRID_LANGID]       = (const char[]){0x09, 0x04},
     [STRID_MANUFACTURER] = "Espressif",
-    [STRID_PRODUCT]      = "ESP32-S3 USB Ethernet",
-    [STRID_SERIAL]       = "001",
+    [STRID_PRODUCT]      = s_product,
+    [STRID_SERIAL]       = s_serial,
     [STRID_INTERFACE]    = "USB net",
     [STRID_MAC]          = s_mac_str,
 };
 
-void usb_desc_fill(tinyusb_config_t *cfg, const uint8_t mac[6])
+void usb_desc_fill(tinyusb_config_t *cfg, const uint8_t mac[6], bool nic)
 {
     snprintf(s_mac_str, sizeof(s_mac_str), "%02X%02X%02X%02X%02X%02X",
              mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    if (nic) {
+        s_device.idProduct = 0x4008;
+        s_device.bcdDevice = 0x0200;
+        strlcpy(s_product, "ESP32-S3 Wi-Fi NIC", sizeof(s_product));
+        strlcpy(s_serial, "NIC001", sizeof(s_serial));
+        s_string[STRID_INTERFACE] = "Wi-Fi NIC";
+    } else {
+        s_device.idProduct = 0x4006;
+        s_device.bcdDevice = 0x0102;
+        strlcpy(s_product, "ESP32-S3 USB Ethernet", sizeof(s_product));
+        strlcpy(s_serial, "SHARE001", sizeof(s_serial));
+        s_string[STRID_INTERFACE] = "USB net";
+    }
     cfg->descriptor.device = &s_device;
     cfg->descriptor.full_speed_config = s_fs_configuration;
     cfg->descriptor.string = s_string;

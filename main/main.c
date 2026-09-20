@@ -1,6 +1,7 @@
 /*
- * USB (RNDIS or NCM) WAN + Wi-Fi SoftAP NAT.
- * SoftAP 192.168.4.1, admin at http://192.168.4.1
+ * Two exclusive work modes:
+ *   share: USB WAN (Windows ICS DHCP client) + SoftAP NAT
+ *   nic:   Wi-Fi STA WAN + USB LAN DHCP, no SoftAP, no ICS
  * ota_0 = RNDIS firmware, ota_1 = NCM firmware.
  */
 
@@ -13,6 +14,7 @@
 #include "app_boot.h"
 #include "usb_wan.h"
 #include "wifi_ap.h"
+#include "wifi_sta.h"
 #include "nat.h"
 #include "web_server.h"
 
@@ -32,13 +34,22 @@ void app_main(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    ESP_ERROR_CHECK(usb_wan_start());
-    ESP_ERROR_CHECK(wifi_ap_start());
-    ESP_ERROR_CHECK(net_nat_bind(usb_wan_netif(), wifi_ap_netif()));
-    ESP_ERROR_CHECK(web_server_start());
-
     const app_cfg_t *cfg = app_config_get();
-    ESP_LOGI(TAG, "USB=%s SSID:%s hidden:%d ch:%u admin http://192.168.4.1/",
-             app_boot_firmware_is_ncm() ? "NCM" : "RNDIS",
-             cfg->ssid, cfg->hidden, cfg->channel);
+    if (cfg->sta_nic) {
+        ESP_ERROR_CHECK(usb_lan_start());
+        ESP_ERROR_CHECK(wifi_sta_start());
+        ESP_ERROR_CHECK(net_nat_bind(wifi_sta_netif(), usb_net_netif()));
+        ESP_LOGI(TAG, "mode=USB-NIC USB=%s STA SSID:%s admin http://%s/",
+                 app_boot_firmware_is_ncm() ? "NCM" : "RNDIS",
+                 cfg->sta_ssid[0] ? cfg->sta_ssid : "(unset)",
+                 USB_LAN_IP_STR);
+    } else {
+        ESP_ERROR_CHECK(usb_wan_start());
+        ESP_ERROR_CHECK(wifi_ap_start());
+        ESP_ERROR_CHECK(net_nat_bind(usb_net_netif(), wifi_ap_netif()));
+        ESP_LOGI(TAG, "mode=share USB=%s AP SSID:%s hidden:%d ch:%u admin http://192.168.4.1/",
+                 app_boot_firmware_is_ncm() ? "NCM" : "RNDIS",
+                 cfg->ssid, cfg->hidden, cfg->channel);
+    }
+    ESP_ERROR_CHECK(web_server_start());
 }

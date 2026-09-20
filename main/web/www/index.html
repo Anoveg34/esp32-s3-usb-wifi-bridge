@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ESP32-S3 共享热点</title>
+<title>ESP32-S3 网络共享</title>
 <style>
 :root { --bg:#0f1419; --card:#1a2332; --line:#2c3a4f; --txt:#e8eef7; --muted:#9aa8bc; --acc:#3d8bfd; --ok:#3dd68c; --warn:#ffb020; --bad:#ff6b6b; }
 *{box-sizing:border-box} body{margin:0;font-family:system-ui,sans-serif;background:var(--bg);color:var(--txt)}
@@ -25,12 +25,24 @@ table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;
 .foot{position:fixed;left:0;right:0;bottom:0;background:#121a24;border-top:1px solid var(--line);padding:12px 20px;z-index:1}
 .foot-inner{max-width:760px;margin:0 auto;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .foot .hint{flex:1;font-size:12px;color:var(--muted)}
+.hide{display:none}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <h1>有线网 Wi-Fi 共享</h1>
-  <p class="sub">管理地址 <span class="ok" id="adminUrl">http://192.168.4.1</span> · 主机名 <span class="ok" id="mdnsUrl">http://esp32-share.local</span> · 当前 USB：<b id="usbNow">-</b></p>
+  <h1 id="pageTitle">有线网 Wi-Fi 共享</h1>
+  <p class="sub">管理地址 <span class="ok" id="adminUrl">http://192.168.4.1</span><span id="mdnsWrap"> · 主机名 <span class="ok" id="mdnsUrl">http://esp32-share.local</span></span> · 当前 USB：<b id="usbNow">-</b></p>
+
+  <div class="card">
+    <h2>工作模式</h2>
+    <label>模式
+      <select id="workMode">
+        <option value="share">共享热点：电脑有线网通过 Windows 共享给板子热点</option>
+        <option value="nic">USB 网卡：板子连家里 Wi-Fi，电脑当普通有线网卡上网</option>
+      </select>
+    </label>
+    <p class="note" id="modeNote">两种模式互相独立，不能同时开。改模式后点下方保存，板子会重启。USB 网卡模式会关掉热点，也不用 Windows 网络共享。</p>
+  </div>
 
   <div class="card">
     <h2>USB 网卡协议</h2>
@@ -45,7 +57,7 @@ table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;
     <p class="note" id="usbNote">改协议后点下方「保存设置」才会发给板子并重启。切换后请在设备管理器里卸掉旧 USB 网卡再插拔。</p>
   </div>
 
-  <div class="card">
+  <div class="card" id="apCard">
     <h2>Wi-Fi 热点</h2>
     <label>名称 (SSID)<input id="ssid" maxlength="32"></label>
     <label>密码（留空表示不修改）<input id="password" type="password" maxlength="64" placeholder="至少 8 位，或勾选开放网络"></label>
@@ -56,7 +68,29 @@ table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;
     <label class="check"><input id="openNet" type="checkbox"> 开放网络（无密码）</label>
   </div>
 
-  <div class="card">
+  <div class="card hide" id="staCard">
+    <h2>连接家里的 Wi-Fi</h2>
+    <p class="note" id="staStatus">未连接</p>
+    <p class="note">这是独立的 USB 网卡模式：<b>不开热点</b>，也<b>不要开 Windows 网络共享</b>。ESP32-S3 只能连 2.4GHz。电脑 USB 自动获取 IP 后打开 <b>http://192.168.5.1</b> 管理。</p>
+    <div class="row">
+      <button class="btn btn-g" type="button" onclick="scanWifi(true)">手动扫描</button>
+      <span class="note" id="scanHint" style="flex:2;margin:0;align-self:center">未连接时约 45 秒自动刷新，连上后请手动扫描</span>
+    </div>
+    <table>
+      <thead><tr><th>名称</th><th>信道</th><th>信号</th><th></th></tr></thead>
+      <tbody id="scanBody"><tr><td class="muted" colspan="4">扫描中或点「手动扫描」</td></tr></tbody>
+    </table>
+    <label>SSID<input id="staSsid" maxlength="32"></label>
+    <label>密码<input id="staPassword" type="password" maxlength="64" placeholder="有密码就填，输入时不会被清空"></label>
+    <label class="check"><input id="staOpen" type="checkbox"> 开放网络（无密码）。家里若刚改成无密码，必须勾这个，否则会拿着旧密码去连、连不上。</label>
+    <div class="row" style="margin-top:12px">
+      <button class="btn btn-p" type="button" onclick="staConnect()">连接</button>
+      <button class="btn btn-d" type="button" onclick="staDisconnect()">断开</button>
+    </div>
+    <p class="note">连接/断开只影响家里 Wi-Fi，不必点底部保存。USB 网速受限于板子 USB 全速，大约 6–12 Mbps。</p>
+  </div>
+
+  <div class="card" id="staListCard">
     <h2>已连接设备</h2>
     <p class="note">踢下线 / 屏蔽会马上发给板子，不必点保存。</p>
     <table>
@@ -65,7 +99,7 @@ table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;
     </table>
   </div>
 
-  <div class="card">
+  <div class="card" id="blkCard">
     <h2>已屏蔽</h2>
     <table>
       <thead><tr><th>MAC</th><th></th></tr></thead>
@@ -75,7 +109,7 @@ table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;
 </div>
 <div class="foot">
   <div class="foot-inner">
-    <div class="hint">改协议或热点后点「保存设置」才发给板子。改 USB 协议会重启。</div>
+    <div class="hint" id="footHint">改协议、模式或热点后点「保存设置」才发给板子。改 USB 协议或工作模式会重启。</div>
     <button class="btn btn-g" onclick="cancelCfg()">取消</button>
     <button class="btn btn-p" onclick="saveCfg()">保存设置</button>
   </div>
@@ -83,41 +117,91 @@ table{width:100%;border-collapse:collapse;font-size:13px} th,td{text-align:left;
 <div class="toast" id="toast"></div>
 <script>
 const toast = (m)=>{const t=document.getElementById('toast');t.textContent=m;t.style.display='block';setTimeout(()=>t.style.display='none',3200)}
-const j = (u,opt)=>fetch(u,opt).then(r=>r.json())
+const j = (u,opt)=>fetch(u,opt).then(r=>{if(!r.ok) throw new Error('http'); return r.json()})
 let snap = null
+let staConnected = false
+function isNic(){return document.getElementById('workMode').value==='nic'}
+function applyModeUi(){
+  const nic=isNic()
+  document.getElementById('pageTitle').textContent=nic?'USB 网卡（连家里 Wi-Fi）':'有线网 Wi-Fi 共享'
+  document.getElementById('staCard').classList.toggle('hide', !nic)
+  document.getElementById('apCard').classList.toggle('hide', nic)
+  document.getElementById('staListCard').classList.toggle('hide', nic)
+  document.getElementById('blkCard').classList.toggle('hide', nic)
+  document.getElementById('modeNote').textContent=nic
+    ? 'USB 网卡模式独立运行：不开热点、不用 Windows 共享。电脑把 USB 网卡设为自动获取 IP，打开 http://192.168.5.1 扫描连接。Windows 会把它识别成另一块网卡。'
+    : '把电脑有线网的「Internet 连接共享」开给这块 USB 网卡，手机连板子热点上网。改模式会重启。'
+  document.getElementById('footHint').textContent=nic
+    ? '底部保存只改模式和 USB 协议。连家里 Wi-Fi 请用上面的连接/断开。'
+    : '改协议、模式或热点后点「保存设置」。改 USB 协议或工作模式会重启。'
+}
 function readForm(){
   return {
+    workMode:document.getElementById('workMode').value,
     usbMode:document.getElementById('usbMode').value,
     ssid:document.getElementById('ssid').value,
     password:document.getElementById('password').value,
     channel:document.getElementById('channel').value,
     hidden:document.getElementById('hidden').checked,
-    openNet:document.getElementById('openNet').checked
+    openNet:document.getElementById('openNet').checked,
+    staSsid:document.getElementById('staSsid').value,
+    staPassword:document.getElementById('staPassword').value,
+    staOpen:document.getElementById('staOpen').checked
   }
 }
 function writeForm(s){
   if(!s) return
+  document.getElementById('workMode').value=s.workMode
   document.getElementById('usbMode').value=s.usbMode
   document.getElementById('ssid').value=s.ssid
   document.getElementById('password').value=s.password||''
   document.getElementById('channel').value=s.channel
   document.getElementById('hidden').checked=!!s.hidden
   document.getElementById('openNet').checked=!!s.openNet
+  if(!document.activeElement || (document.activeElement.id!=='staSsid' && document.activeElement.id!=='staPassword')){
+    document.getElementById('staSsid').value=s.staSsid||''
+  }
+  applyModeUi()
+}
+function staReasonText(code){
+  const map={2:'认证失败（密码不对，或开放网络仍拿着旧密码）',3:'关联失败',15:'握手超时',201:'找不到这个 2.4G 热点（可能是 5G）',205:'握手超时'}
+  return map[code]||('失败原因 '+code)
+}
+function updateStaStatus(c){
+  const st=document.getElementById('staStatus')
+  staConnected=!!c.sta_connected
+  if(!c.sta_nic) return
+  if(c.sta_connected){
+    st.textContent='已连接 '+(c.sta_live_ssid||c.sta_ssid||'')+(c.sta_ip?(' · '+c.sta_ip):'')
+    st.className='note ok'
+  }else if(c.sta_reason){
+    st.textContent='未连接：'+staReasonText(c.sta_reason)
+    st.className='note'
+  }else if(c.sta_ssid){
+    st.textContent='正在连接 '+(c.sta_live_ssid||c.sta_ssid)+' …'
+    st.className='note'
+  }else{
+    st.textContent='未连接，从列表点选后按「连接」'
+    st.className='note'
+  }
 }
 function loadCfg(){
   return j('/api/config').then(c=>{
     writeForm({
+      workMode:c.sta_nic?'nic':'share',
       usbMode:c.usb_ncm?'ncm':'rndis',
       ssid:c.ssid||'',
       password:'',
       channel:c.channel||6,
       hidden:!!c.hidden,
-      openNet:!!c.open
+      openNet:!!c.open,
+      staSsid:c.sta_ssid||''
     })
+    if(c.sta_open) document.getElementById('staOpen').checked=true
     document.getElementById('usbNow').textContent=c.firmware_usb
-    const host=c.hostname||'esp32-share.local'
-    document.getElementById('mdnsUrl').textContent='http://'+host
-    const ip=c.admin_ip||'192.168.4.1'
+    document.getElementById('mdnsWrap').classList.toggle('hide', !c.hostname)
+    if(c.hostname) document.getElementById('mdnsUrl').textContent='http://'+c.hostname
+    const ip=c.admin_ip||(isNic()?'192.168.5.1':'192.168.4.1')
     document.getElementById('adminUrl').textContent='http://'+ip
     const miss=[]
     if(!c.rndis_ready) miss.push('RNDIS')
@@ -125,9 +209,61 @@ function loadCfg(){
     document.getElementById('usbNote').textContent=miss.length
       ? ('当前 Flash 缺少：'+miss.join('、')+'。请运行 python tools/dual_fw.py flash 后再切换协议。')
       : '两套固件都在 Flash 里。改协议后点下方保存，板子会重启到对应固件。'
+    updateStaStatus(c)
     snap = readForm()
   })
 }
+function refreshSta(){
+  if(!isNic()) return
+  j('/api/config').then(updateStaStatus).catch(()=>{})
+}
+function scanWifi(manual){
+  const body=document.getElementById('scanBody')
+  const hint=document.getElementById('scanHint')
+  if(manual){
+    body.innerHTML='<tr><td class="muted" colspan="4">扫描中…</td></tr>'
+    hint.textContent='扫描中，仅 2.4GHz'
+  }
+  const selected=document.getElementById('staSsid').value
+  j('/api/scan'+(manual?'?force=1':'')).then(d=>{
+    const aps=d.aps||[]
+    if(!aps.length){
+      if(!manual) return
+      body.innerHTML='<tr><td class="muted" colspan="4">没扫到 2.4G 网络</td></tr>'
+      toast('没扫到 Wi-Fi')
+      return
+    }
+    body.innerHTML=aps.map(a=>{
+      const on=a.ssid===selected?' class="ok"':''
+      const shown=a.ssid.replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      return `<tr${on}><td>${shown}</td><td>${a.channel||'-'}</td><td>${a.rssi} dBm</td>
+        <td><button class="btn btn-g" type="button" onclick='pickAp(${JSON.stringify(a.ssid)},${a.open?1:0})'>${a.open?'开放':'选择'}</button></td></tr>`
+    }).join('')
+    hint.textContent='仅 2.4GHz · 未连接时约 45 秒自动刷新'
+  }).catch(()=>{
+    body.innerHTML='<tr><td class="muted" colspan="4">扫描失败</td></tr>'
+    if(manual) toast('扫描失败')
+  })
+}
+function pickAp(ssid, open){
+  document.getElementById('staSsid').value=ssid
+  document.getElementById('staOpen').checked=!!open
+  if(open) document.getElementById('staPassword').value=''
+  toast(open?'已选开放网络，点连接':'已选中，输入密码后点连接')
+}
+function staConnect(){
+  const ssid=document.getElementById('staSsid').value.trim()
+  const open=document.getElementById('staOpen').checked
+  const password=document.getElementById('staPassword').value
+  if(!ssid){toast('请先选择或填写 SSID'); return}
+  j('/api/sta/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password,open})})
+    .then(r=>{toast(r.message||'正在连接'); refreshSta()})
+    .catch(()=>toast('连接请求失败（开放网络请勾选无密码）'))
+}
+function staDisconnect(){
+  j('/api/sta/disconnect',{method:'POST'}).then(r=>{toast(r.message||'已断开'); refreshSta()}).catch(()=>toast('断开失败'))
+}
+document.getElementById('workMode').addEventListener('change', applyModeUi)
 function staRow(s){
   return `<tr>
     <td class="mac">${s.mac}</td><td>${s.ip||'-'}</td><td>${s.rssi} dBm</td>
@@ -135,6 +271,7 @@ function staRow(s){
         <button class="btn btn-d" onclick="block('${s.mac}',true)">屏蔽</button></td></tr>`
 }
 function loadSta(){
+  if(isNic()) return Promise.resolve()
   return j('/api/stations').then(d=>{
     const tb=document.getElementById('staBody')
     tb.innerHTML=d.stations.length?d.stations.map(staRow).join(''):'<tr><td class="muted" colspan="4">暂无设备</td></tr>'
@@ -142,7 +279,7 @@ function loadSta(){
     bb.innerHTML=d.blocked.length?d.blocked.map(m=>`<tr><td class="mac">${m}</td><td><button class="btn btn-g" onclick="block('${m}',false)">取消屏蔽</button></td></tr>`).join(''):'<tr><td class="muted" colspan="2">无</td></tr>'
   })
 }
-function loadAll(){loadCfg();loadSta()}
+function loadAll(){loadCfg().then(()=>{if(isNic()) scanWifi(false)});loadSta()}
 function cancelCfg(){
   writeForm(snap)
   toast('已还原未保存的修改')
@@ -155,7 +292,8 @@ function saveCfg(){
     channel:parseInt(f.channel,10),
     hidden:f.hidden,
     open:f.openNet,
-    usb_ncm:f.usbMode==='ncm'
+    usb_ncm:f.usbMode==='ncm',
+    sta_nic:f.workMode==='nic'
   }
   j('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(r=>{toast(r.message||'已保存'); if(r.reboot){toast('设备正在重启…')} loadAll()})
@@ -163,7 +301,7 @@ function saveCfg(){
 }
 function kick(mac){j('/api/kick',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mac})}).then(()=>{toast('已踢下线');loadSta()})}
 function block(mac,on){j('/api/block',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({mac,block:on})}).then(()=>{toast(on?'已屏蔽':'已取消');loadSta()})}
-loadAll(); setInterval(loadSta, 4000)
+loadAll(); setInterval(loadSta, 4000); setInterval(refreshSta, 3000); setInterval(()=>{if(isNic() && !document.hidden && !staConnected) scanWifi(false)}, 45000)
 </script>
 </body>
 </html>

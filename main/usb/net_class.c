@@ -2,6 +2,7 @@
 #include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/event_groups.h"
 #include "esp_check.h"
 #include "tinyusb_net.h"
@@ -18,6 +19,7 @@ typedef struct {
 
 struct tinyusb_net_handle {
     bool initialized;
+    SemaphoreHandle_t tx_mux;
     SemaphoreHandle_t buffer_sema;
     EventGroupHandle_t tx_flags;
     tusb_net_rx_cb_t rx_cb;
@@ -54,14 +56,36 @@ esp_err_t tinyusb_net_send_sync(void *buffer, uint16_t len, void *buff_free_arg,
     if (!tud_mounted()) {
         return ESP_ERR_INVALID_STATE;
     }
+    if (s_net_obj.tx_mux && xSemaphoreTake(s_net_obj.tx_mux, timeout) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
 
     if (!s_net_obj.tx_flags) {
         s_net_obj.tx_flags = xEventGroupCreate();
-        ESP_RETURN_ON_FALSE(s_net_obj.tx_flags, ESP_ERR_NO_MEM, TAG, "Failed to allocate event flags");
+        if (!s_net_obj.tx_flags) {
+            if (s_net_obj.tx_mux) {
+                xSemaphoreGive(s_net_obj.tx_mux);
+            }
+            return ESP_ERR_NO_MEM;
+        }
     }
     if (!s_net_obj.buffer_sema) {
         s_net_obj.buffer_sema = xSemaphoreCreateBinary();
-        ESP_RETURN_ON_FALSE(s_net_obj.buffer_sema, ESP_ERR_NO_MEM, TAG, "Failed to allocate buffer semaphore");
+        if (!s_net_obj.buffer_sema) {
+            if (s_net_obj.tx_mux) {
+                xSemaphoreGive(s_net_obj.tx_mux);
+            }
+            return ESP_ERR_NO_MEM;
+        }
+    }
+
+    /* RNDIS has a single IN buffer. Deferring when it is busy floods the TinyUSB
+     * event queue that also carries EP0 keepalives; Windows then drops the NIC. */
+    if (!tud_network_can_xmit(len)) {
+        if (s_net_obj.tx_mux) {
+            xSemaphoreGive(s_net_obj.tx_mux);
+        }
+        return ESP_FAIL;
     }
 
     packet_t packet = {
@@ -78,6 +102,12 @@ esp_err_t tinyusb_net_send_sync(void *buffer, uint16_t len, void *buff_free_arg,
     EventBits_t bits = xEventGroupWaitBits(s_net_obj.tx_flags, TX_FINISHED_BIT, pdTRUE, pdTRUE, timeout);
     xSemaphoreTake(s_net_obj.buffer_sema, portMAX_DELAY);
     s_net_obj.packet_to_send = NULL;
+    if (!(bits & TX_FINISHED_BIT)) {
+        bits = xEventGroupClearBits(s_net_obj.tx_flags, TX_FINISHED_BIT);
+    }
+    if (s_net_obj.tx_mux) {
+        xSemaphoreGive(s_net_obj.tx_mux);
+    }
     if (bits & TX_FINISHED_BIT) {
         return packet.result;
     }
@@ -87,6 +117,10 @@ esp_err_t tinyusb_net_send_sync(void *buffer, uint16_t len, void *buff_free_arg,
 esp_err_t tinyusb_net_init(const tinyusb_net_config_t *cfg)
 {
     ESP_RETURN_ON_FALSE(s_net_obj.initialized == false, ESP_ERR_INVALID_STATE, TAG, "TinyUSB Net class is already initialized");
+    if (s_net_obj.tx_mux == NULL) {
+        s_net_obj.tx_mux = xSemaphoreCreateMutex();
+        ESP_RETURN_ON_FALSE(s_net_obj.tx_mux, ESP_ERR_NO_MEM, TAG, "Failed to allocate TX mutex");
+    }
     s_net_obj.rx_cb = cfg->on_recv_callback;
     s_net_obj.init_cb = cfg->on_init_callback;
     s_net_obj.tx_buff_free_cb = cfg->free_tx_buffer;

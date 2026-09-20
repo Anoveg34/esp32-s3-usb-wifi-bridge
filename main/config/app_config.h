@@ -18,6 +18,9 @@ typedef struct {
     uint8_t channel;
     bool hidden;
     bool usb_ncm;
+    bool sta_nic;
+    char sta_ssid[APP_CFG_SSID_MAX + 1];
+    char sta_password[APP_CFG_PASS_MAX + 1];
     uint8_t block_count;
     uint8_t blocked[APP_CFG_BLOCK_MAX][6];
 } app_cfg_t;

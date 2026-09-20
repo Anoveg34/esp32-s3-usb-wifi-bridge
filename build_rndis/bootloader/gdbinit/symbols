@@ -1,9 +1,0 @@
-
-
-# Load bootloader symbols
-set confirm off
-    # Bootloader elf was not found
-set confirm on
-
-# Load application symbols
-file D:/ESP32-S3/projects/esp32-s3-wired-to-wifi/build_rndis/bootloader/bootloader.elf

@@ -32,6 +32,13 @@ flasher_args.json # Generated in build directory
 sdkconfig.old
 sdkconfig
 
+# Dual-firmware build trees (tools/dual_fw.py uses build_rndis / build_ncm)
+build_ncm/
+build_rndis/
+
+# Editor / ESP-IDF extension (contains local toolchain and COM port)
+.vscode/
+
 # ESP-IDF dependencies
 # For older versions or manual component management
 /components/.idf/

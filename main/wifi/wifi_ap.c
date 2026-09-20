@@ -76,6 +76,10 @@ esp_err_t wifi_ap_apply_config(void)
     } else {
         wifi_config.ap.authmode = WIFI_AUTH_OPEN;
     }
+    wifi_ap_record_t sta_ap = {0};
+    if (esp_wifi_sta_get_ap_info(&sta_ap) == ESP_OK && sta_ap.primary >= 1) {
+        wifi_config.ap.channel = sta_ap.primary;
+    }
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_AP, &wifi_config), TAG, "set AP config");
     ESP_LOGI(TAG, "AP SSID=%s ch=%u hidden=%d auth=%s",
              wifi_config.ap.ssid, wifi_config.ap.channel, wifi_config.ap.ssid_hidden,
@@ -86,6 +90,11 @@ esp_err_t wifi_ap_apply_config(void)
 esp_netif_t *wifi_ap_netif(void)
 {
     return s_ap_netif;
+}
+
+bool wifi_ap_is_started(void)
+{
+    return s_ap_netif != NULL;
 }
 
 void wifi_ap_admin_ip(char *buf, size_t len)

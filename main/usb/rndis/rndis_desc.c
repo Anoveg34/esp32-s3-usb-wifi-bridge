@@ -24,7 +24,7 @@ enum {
 #define USB_VID          0x303A
 #define RNDIS_CONFIG_TOTAL_LEN  (TUD_CONFIG_DESC_LEN + TUD_RNDIS_DESC_LEN)
 
-static const tusb_desc_device_t s_device = {
+static tusb_desc_device_t s_device = {
     .bLength            = sizeof(tusb_desc_device_t),
     .bDescriptorType    = TUSB_DESC_DEVICE,
     .bcdUSB             = 0x0200,
@@ -47,18 +47,34 @@ static const uint8_t s_fs_configuration[] = {
                          EPNUM_NET_OUT, EPNUM_NET_IN, 64),
 };
 
+static char s_product[32] = "ESP32-S3 USB Ethernet";
+static char s_serial[12] = "SHARE001";
+
 static const char *s_string[USB_NET_STRING_COUNT] = {
     [STRID_LANGID]       = (const char[]){0x09, 0x04},
     [STRID_MANUFACTURER] = "Espressif",
-    [STRID_PRODUCT]      = "ESP32-S3 USB Ethernet",
-    [STRID_SERIAL]       = "001",
+    [STRID_PRODUCT]      = s_product,
+    [STRID_SERIAL]       = s_serial,
     [STRID_INTERFACE]    = "RNDIS",
     [STRID_MAC]          = "",
 };
 
-void usb_desc_fill(tinyusb_config_t *cfg, const uint8_t mac[6])
+void usb_desc_fill(tinyusb_config_t *cfg, const uint8_t mac[6], bool nic)
 {
     (void)mac;
+    if (nic) {
+        s_device.idProduct = 0x4007;
+        s_device.bcdDevice = 0x0200;
+        strlcpy(s_product, "ESP32-S3 Wi-Fi NIC", sizeof(s_product));
+        strlcpy(s_serial, "NIC001", sizeof(s_serial));
+        s_string[STRID_INTERFACE] = "Wi-Fi NIC";
+    } else {
+        s_device.idProduct = 0x4005;
+        s_device.bcdDevice = 0x0101;
+        strlcpy(s_product, "ESP32-S3 USB Ethernet", sizeof(s_product));
+        strlcpy(s_serial, "SHARE001", sizeof(s_serial));
+        s_string[STRID_INTERFACE] = "RNDIS";
+    }
     cfg->descriptor.device = &s_device;
     cfg->descriptor.full_speed_config = s_fs_configuration;
     cfg->descriptor.string = s_string;

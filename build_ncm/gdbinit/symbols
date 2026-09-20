@@ -1,9 +1,0 @@
-
-
-# Load bootloader symbols
-set confirm off
-    add-symbol-file D:/ESP32-S3/projects/esp32-s3-wired-to-wifi/build_ncm/bootloader/bootloader.elf
-set confirm on
-
-# Load application symbols
-file D:/ESP32-S3/projects/esp32-s3-wired-to-wifi/build_ncm/esp32-s3-wired-to-wifi.elf

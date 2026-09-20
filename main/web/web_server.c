@@ -19,6 +19,8 @@
 #include "app_config.h"
 #include "app_boot.h"
 #include "wifi_ap.h"
+#include "wifi_sta.h"
+#include "usb_wan.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "web";
@@ -95,7 +97,17 @@ static esp_err_t handle_get_config(httpd_req_t *req)
 {
     const app_cfg_t *cfg = app_config_get();
     char admin_ip[16] = {0};
-    wifi_ap_admin_ip(admin_ip, sizeof(admin_ip));
+    char usb_lan_ip[16] = {0};
+    if (cfg->sta_nic) {
+        usb_net_admin_ip(admin_ip, sizeof(admin_ip));
+        strlcpy(usb_lan_ip, admin_ip[0] ? admin_ip : USB_LAN_IP_STR, sizeof(usb_lan_ip));
+    } else {
+        wifi_ap_admin_ip(admin_ip, sizeof(admin_ip));
+    }
+    char sta_ip[16] = {0};
+    if (cfg->sta_nic) {
+        wifi_sta_ip(sta_ip, sizeof(sta_ip));
+    }
     cJSON *root = cJSON_CreateObject();
     cJSON_AddStringToObject(root, "ssid", cfg->ssid);
     cJSON_AddNumberToObject(root, "channel", cfg->channel);
@@ -106,8 +118,22 @@ static esp_err_t handle_get_config(httpd_req_t *req)
     cJSON_AddStringToObject(root, "firmware_usb", app_boot_firmware_is_ncm() ? "NCM" : "RNDIS");
     cJSON_AddBoolToObject(root, "rndis_ready", app_boot_slot_ready(false));
     cJSON_AddBoolToObject(root, "ncm_ready", app_boot_slot_ready(true));
-    cJSON_AddStringToObject(root, "admin_ip", admin_ip[0] ? admin_ip : "192.168.4.1");
-    cJSON_AddStringToObject(root, "hostname", APP_MDNS_HOSTNAME ".local");
+    cJSON_AddBoolToObject(root, "sta_nic", cfg->sta_nic);
+    cJSON_AddStringToObject(root, "sta_ssid", cfg->sta_ssid);
+    cJSON_AddBoolToObject(root, "sta_open", cfg->sta_password[0] == 0);
+    cJSON_AddBoolToObject(root, "sta_connected", cfg->sta_nic && wifi_sta_is_connected());
+    cJSON_AddNumberToObject(root, "sta_reason", cfg->sta_nic ? wifi_sta_fail_reason() : 0);
+    char sta_ssid_now[33] = {0};
+    if (cfg->sta_nic) {
+        wifi_sta_connected_ssid(sta_ssid_now, sizeof(sta_ssid_now));
+    }
+    cJSON_AddStringToObject(root, "sta_live_ssid", sta_ssid_now);
+    cJSON_AddStringToObject(root, "sta_ip", sta_ip);
+    cJSON_AddStringToObject(root, "admin_ip", admin_ip[0] ? admin_ip : (cfg->sta_nic ? USB_LAN_IP_STR : "192.168.4.1"));
+    cJSON_AddStringToObject(root, "usb_lan_ip", cfg->sta_nic ? (usb_lan_ip[0] ? usb_lan_ip : USB_LAN_IP_STR) : "");
+    /* mDNS only binds the predefined Wi-Fi netifs, so the name is unreachable
+     * over USB. Report it empty in NIC mode and the UI hides the link. */
+    cJSON_AddStringToObject(root, "hostname", cfg->sta_nic ? "" : APP_MDNS_HOSTNAME ".local");
     return send_json(req, root);
 }
 
@@ -120,7 +146,7 @@ static void reboot_task(void *arg)
 
 static esp_err_t handle_post_config(httpd_req_t *req)
 {
-    char body[512];
+    char body[1024];
     if (read_body(req, body, sizeof(body)) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
     }
@@ -167,19 +193,25 @@ static esp_err_t handle_post_config(httpd_req_t *req)
         usb_changed = (want_ncm != cfg.usb_ncm);
         cfg.usb_ncm = want_ncm;
     }
+    const cJSON *sta_nic = cJSON_GetObjectItemCaseSensitive(json, "sta_nic");
+    bool mode_changed = false;
+    if (cJSON_IsBool(sta_nic)) {
+        bool want_nic = cJSON_IsTrue(sta_nic);
+        mode_changed = (want_nic != cfg.sta_nic);
+        cfg.sta_nic = want_nic;
+    }
     cJSON_Delete(json);
 
     if (app_config_save(&cfg) != ESP_OK) {
         return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "nvs");
     }
-    wifi_ap_apply_config();
 
-    cJSON *root = cJSON_CreateObject();
-    cJSON_AddBoolToObject(root, "ok", true);
-
+    bool need_reboot = mode_changed;
     if (usb_changed && cfg.usb_ncm != app_boot_firmware_is_ncm()) {
         esp_err_t sw = app_boot_select_usb(cfg.usb_ncm);
         if (sw != ESP_OK) {
+            cJSON *root = cJSON_CreateObject();
+            cJSON_AddBoolToObject(root, "ok", true);
             cJSON_AddBoolToObject(root, "reboot", false);
             cJSON_AddStringToObject(root, "message",
                                     cfg.usb_ncm
@@ -187,21 +219,124 @@ static esp_err_t handle_post_config(httpd_req_t *req)
                                         : "已保存，但 Flash 里还没有 RNDIS 固件。请运行 python tools/dual_fw.py flash 把两套固件都烧进去。");
             return send_json(req, root);
         }
+        need_reboot = true;
+    }
+
+    if (need_reboot) {
+        cJSON *root = cJSON_CreateObject();
+        cJSON_AddBoolToObject(root, "ok", true);
         cJSON_AddBoolToObject(root, "reboot", true);
-        cJSON_AddStringToObject(root, "message", "正在重启到另一套 USB 固件，请稍后重新连接热点。");
+        if (mode_changed && cfg.sta_nic) {
+            cJSON_AddStringToObject(root, "message",
+                                    "正在重启为 USB 网卡模式。板子热点已关掉。电脑请让 USB 网卡自动获取 IP（192.168.5.x），打开 http://192.168.5.1 再连家里 Wi-Fi。不要开 Windows 网络共享。");
+        } else if (mode_changed) {
+            cJSON_AddStringToObject(root, "message",
+                                    "正在重启为共享热点模式。请用手机连板子热点，打开 http://192.168.4.1 。电脑需把有线网上网共享给 USB 网卡。");
+        } else {
+            cJSON_AddStringToObject(root, "message", "正在重启到另一套 USB 固件，请稍后重新打开管理页。");
+        }
         xTaskCreate(reboot_task, "reboot", 2048, NULL, 5, NULL);
         return send_json(req, root);
     }
 
+    if (wifi_ap_is_started()) {
+        wifi_ap_apply_config();
+    }
+
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
     cJSON_AddBoolToObject(root, "reboot", false);
-    cJSON_AddStringToObject(root, "message", "热点设置已生效。");
+    cJSON_AddStringToObject(root, "message", "设置已生效。");
+    return send_json(req, root);
+}
+
+static esp_err_t handle_scan(httpd_req_t *req)
+{
+    char query[32] = {0};
+    char val[8] = {0};
+    bool force = false;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK &&
+        httpd_query_key_value(query, "force", val, sizeof(val)) == ESP_OK &&
+        val[0] == '1') {
+        force = true;
+    }
+    wifi_scan_item_t items[WIFI_SCAN_MAX];
+    int n = wifi_radio_scan(items, WIFI_SCAN_MAX, force);
+    cJSON *root = cJSON_CreateObject();
+    cJSON *arr = cJSON_AddArrayToObject(root, "aps");
+    for (int i = 0; i < n; i++) {
+        cJSON *one = cJSON_CreateObject();
+        cJSON_AddStringToObject(one, "ssid", items[i].ssid);
+        cJSON_AddNumberToObject(one, "rssi", items[i].rssi);
+        cJSON_AddBoolToObject(one, "open", items[i].open);
+        cJSON_AddNumberToObject(one, "channel", items[i].channel);
+        cJSON_AddItemToArray(arr, one);
+    }
+    return send_json(req, root);
+}
+
+static esp_err_t handle_sta_connect(httpd_req_t *req)
+{
+    if (!app_config_get()->sta_nic) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "not nic mode");
+    }
+    char body[512];
+    if (read_body(req, body, sizeof(body)) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "body");
+    }
+    cJSON *json = cJSON_Parse(body);
+    if (json == NULL) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "json");
+    }
+    const cJSON *ssid = cJSON_GetObjectItemCaseSensitive(json, "ssid");
+    const cJSON *password = cJSON_GetObjectItemCaseSensitive(json, "password");
+    const cJSON *open = cJSON_GetObjectItemCaseSensitive(json, "open");
+    if (!cJSON_IsString(ssid) || ssid->valuestring == NULL || ssid->valuestring[0] == 0) {
+        cJSON_Delete(json);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "ssid");
+    }
+    app_cfg_t cfg;
+    app_config_get_copy(&cfg);
+    strlcpy(cfg.sta_ssid, ssid->valuestring, sizeof(cfg.sta_ssid));
+    if (cJSON_IsTrue(open)) {
+        cfg.sta_password[0] = 0;
+    } else if (cJSON_IsString(password) && password->valuestring && password->valuestring[0]) {
+        strlcpy(cfg.sta_password, password->valuestring, sizeof(cfg.sta_password));
+    } else if (cfg.sta_password[0] == 0) {
+        cJSON_Delete(json);
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "password");
+    }
+    cJSON_Delete(json);
+    if (app_config_save(&cfg) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "nvs");
+    }
+    if (wifi_sta_connect_now() != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "connect");
+    }
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "message", "正在连接家里的 Wi-Fi。");
+    return send_json(req, root);
+}
+
+static esp_err_t handle_sta_disconnect(httpd_req_t *req)
+{
+    if (!app_config_get()->sta_nic) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "not nic mode");
+    }
+    (void)wifi_sta_disconnect_now();
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddBoolToObject(root, "ok", true);
+    cJSON_AddStringToObject(root, "message", "已断开家里的 Wi-Fi。");
     return send_json(req, root);
 }
 
 static esp_err_t handle_stations(httpd_req_t *req)
 {
     wifi_sta_list_t list = {0};
-    esp_wifi_ap_get_sta_list(&list);
+    if (wifi_ap_is_started()) {
+        (void)esp_wifi_ap_get_sta_list(&list);
+    }
 
     cJSON *root = cJSON_CreateObject();
     cJSON *arr = cJSON_AddArrayToObject(root, "stations");
@@ -291,7 +426,7 @@ esp_err_t web_server_start(void)
     config.stack_size = 8192;
     config.max_open_sockets = 4;
     config.lru_purge_enable = true;
-    config.max_uri_handlers = 8;
+    config.max_uri_handlers = 12;
 
     httpd_handle_t server = NULL;
     ESP_RETURN_ON_ERROR(httpd_start(&server, &config), TAG, "httpd_start");
@@ -300,6 +435,9 @@ esp_err_t web_server_start(void)
         {.uri = "/", .method = HTTP_GET, .handler = handle_index},
         {.uri = "/api/config", .method = HTTP_GET, .handler = handle_get_config},
         {.uri = "/api/config", .method = HTTP_POST, .handler = handle_post_config},
+        {.uri = "/api/scan", .method = HTTP_GET, .handler = handle_scan},
+        {.uri = "/api/sta/connect", .method = HTTP_POST, .handler = handle_sta_connect},
+        {.uri = "/api/sta/disconnect", .method = HTTP_POST, .handler = handle_sta_disconnect},
         {.uri = "/api/stations", .method = HTTP_GET, .handler = handle_stations},
         {.uri = "/api/kick", .method = HTTP_POST, .handler = handle_kick},
         {.uri = "/api/block", .method = HTTP_POST, .handler = handle_block},
@@ -311,6 +449,10 @@ esp_err_t web_server_start(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(mdns_hostname_set(APP_MDNS_HOSTNAME));
     ESP_ERROR_CHECK_WITHOUT_ABORT(mdns_instance_name_set("ESP32-S3 Share"));
     ESP_ERROR_CHECK_WITHOUT_ABORT(mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0));
-    ESP_LOGI(TAG, "admin UI http://192.168.4.1/  or http://%s.local/", APP_MDNS_HOSTNAME);
+    if (app_config_get()->sta_nic) {
+        ESP_LOGI(TAG, "admin UI http://%s/", USB_LAN_IP_STR);
+    } else {
+        ESP_LOGI(TAG, "admin UI http://192.168.4.1/  or http://%s.local/", APP_MDNS_HOSTNAME);
+    }
     return ESP_OK;
 }

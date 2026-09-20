@@ -10,6 +10,11 @@
 #undef CFG_TUD_ECM_RNDIS
 #undef CFG_TUD_NCM
 
+/* Shared with bus reset / control transfers / RNDIS keepalives. Default 16
+ * overflows under RNDIS (one USB xfer per Ethernet frame). */
+#undef CFG_TUD_TASK_QUEUE_SZ
+#define CFG_TUD_TASK_QUEUE_SZ 128
+
 #if CONFIG_EXAMPLE_USB_NET_MODE_NCM
 #define CFG_TUD_ECM_RNDIS  0
 #define CFG_TUD_NCM        1

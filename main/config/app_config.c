@@ -46,6 +46,13 @@ void app_config_load(void)
     if (nvs_get_u8(nvs, "ncm", &u8) == ESP_OK) {
         s_cfg.usb_ncm = u8 != 0;
     }
+    if (nvs_get_u8(nvs, "nic", &u8) == ESP_OK) {
+        s_cfg.sta_nic = u8 != 0;
+    }
+    len = sizeof(s_cfg.sta_ssid);
+    nvs_get_str(nvs, "stassid", s_cfg.sta_ssid, &len);
+    len = sizeof(s_cfg.sta_password);
+    nvs_get_str(nvs, "stapass", s_cfg.sta_password, &len);
     len = sizeof(s_cfg.blocked);
     if (nvs_get_blob(nvs, "blk", s_cfg.blocked, &len) == ESP_OK) {
         s_cfg.block_count = (uint8_t)(len / 6);
@@ -55,8 +62,9 @@ void app_config_load(void)
     }
     nvs_close(nvs);
     s_loaded = true;
-    ESP_LOGI(TAG, "loaded SSID=%s ch=%u hidden=%d ncm=%d blocks=%u",
-             s_cfg.ssid, s_cfg.channel, s_cfg.hidden, s_cfg.usb_ncm, s_cfg.block_count);
+    ESP_LOGI(TAG, "loaded SSID=%s ch=%u hidden=%d ncm=%d nic=%d sta=%s blocks=%u",
+             s_cfg.ssid, s_cfg.channel, s_cfg.hidden, s_cfg.usb_ncm, s_cfg.sta_nic,
+             s_cfg.sta_ssid, s_cfg.block_count);
 }
 
 esp_err_t app_config_save(const app_cfg_t *cfg)
@@ -76,6 +84,15 @@ esp_err_t app_config_save(const app_cfg_t *cfg)
     }
     if (err == ESP_OK) {
         err = nvs_set_u8(nvs, "ncm", cfg->usb_ncm ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_u8(nvs, "nic", cfg->sta_nic ? 1 : 0);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, "stassid", cfg->sta_ssid);
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, "stapass", cfg->sta_password);
     }
     if (err == ESP_OK) {
         if (cfg->block_count == 0) {

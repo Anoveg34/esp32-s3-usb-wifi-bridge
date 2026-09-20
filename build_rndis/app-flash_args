@@ -1,2 +1,0 @@
---flash-mode dio --flash-freq 80m --flash-size 16MB
-0x20000 esp32-s3-wired-to-wifi.bin
